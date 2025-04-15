@@ -12,6 +12,9 @@ EXPERIMENT = os.environ["EXPERIMENT"]
 print(f"{EXPERIMENT}.pager_models")
 exp_models = importlib.import_module(f"{EXPERIMENT}.pager_models")
 exp_dataset = importlib.import_module(f"{EXPERIMENT}.extract_dataset")
+exp_torchmodel = importlib.import_module(f"{EXPERIMENT}.torch_model")
+TorchModel = exp_torchmodel.TorchModel
+CustomLoss = exp_torchmodel.CustomLoss
 
 PATH_PUBLAYNET = os.environ["PATH_PUBLAYNET"]
 PATH_PDF = os.environ["PATH_PDF"]
@@ -27,8 +30,8 @@ PATH_TEST_IMAGES = os.environ["PATH_TEST_IMAGES"]
 PATH_TEST_JSON = os.environ["PATH_TEST_JSON"]
 PATH_TEST_PDF = os.environ["PATH_TEST_PDF"]
 
-GLAM_NODE_MODEL = os.path.join(EXPERIMENT, os.environ["GLAM_NODE_MODEL"])
-GLAM_EDGE_MODEL = os.path.join(EXPERIMENT, os.environ["GLAM_EDGE_MODEL"])
+GLAM_MODEL = os.path.join(EXPERIMENT, os.environ["GLAM_MODEL"])
+# GLAM_EDGE_MODEL = os.path.join(EXPERIMENT, os.environ["GLAM_EDGE_MODEL"])
 LOG_FILE = os.path.join(EXPERIMENT, "log.txt")
 
 
@@ -38,6 +41,13 @@ SAVE_FREQUENCY = int(os.environ["SAVE_FREQUENCY"])
 PUBLAYNET_IMBALANCE = [float(num) for num in os.environ["PUBLAYNET_IMBALANCE"][1:-1].split(',')]
 EDGE_IMBALANCE = float(os.environ["EDGE_IMBALANCE"])
 EDGE_COEF = float(os.environ["EDGE_COEF"])
+
+LOSS_PARAMS = {
+    "publaynet_imbalance": PUBLAYNET_IMBALANCE,
+    "edge_imbalance": EDGE_IMBALANCE,
+    "edge_coef": EDGE_COEF
+}
+PARAMS["loss_params"] = LOSS_PARAMS
 
 
 extract = importlib.import_module(f"{EXPERIMENT}.extract_dataset").extract
@@ -52,8 +62,8 @@ def get_preprocessing_models():
 
 def get_final_model():
     return exp_models.get_img2phis(conf={
-            "path_node_gnn": GLAM_NODE_MODEL,
-            "path_edge_linear": GLAM_EDGE_MODEL,
+            "path_model": GLAM_MODEL,
+            # "path_edge_linear": GLAM_EDGE_MODEL,
             "H1": PARAMS["H1"],
             "H2": PARAMS["H2"],
             "node_featch": PARAMS["node_featch"],

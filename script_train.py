@@ -8,69 +8,12 @@ import numpy as np
 import os
 import json
 import time
-from config import GLAM_NODE_MODEL, GLAM_EDGE_MODEL, LOG_FILE, PARAMS,SAVE_FREQUENCY,PATH_GRAPHS_JSONS,PUBLAYNET_IMBALANCE, EDGE_IMBALANCE,EDGE_COEF
-device = torch.device('cuda:0' if torch.cuda.device_count() != 0 else 'cpu')
-# device = torch.device('cpu')
-class NodeGLAM(torch.nn.Module):
-    def __init__(self,  input_, h, output_):
-        super(NodeGLAM, self).__init__()
-        self.activation = GELU()
-        self.batch_norm1 = BatchNorm(input_)
-        self.linear1 = Linear(input_, h[0]) 
-        self.tag1 = TAGConv(h[0], h[1])
-        self.linear2 = Linear(h[1], h[2]) 
-        self.tag2 = TAGConv(h[2], h[3])
-        self.linear3 = Linear(h[3]+input_, h[4])
-        self.linear4 =Linear(h[4], h[5])
-        self.classifer = Linear(h[5], output_)
+from config import GLAM_MODEL, LOG_FILE, PARAMS,SAVE_FREQUENCY,PATH_GRAPHS_JSONS
+from config import TorchModel, CustomLoss
+# device = torch.device('cuda:0' if torch.cuda.device_count() != 0 else 'cpu')
+SKIP_INDEX = []
+device = torch.device('cpu')
 
-    
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        x = self.batch_norm1(x)
-        h = self.linear1(x)
-        h = self.activation(h)
-        h = self.tag1(h, edge_index)
-        h = self.activation(h)
-        
-        h = self.linear2(h)
-        h = self.activation(h)
-        h = self.tag2(h, edge_index)
-        h = self.activation(h)
-        a = torch.cat([x, h], dim=1)
-        a = self.linear3(a)
-        a = self.activation(a)
-        a = self.linear4(a)
-
-        cl = self.classifer(self.activation(a))
-        # a = torch.softmax(a, dim=-1)
-        return a, cl
-
-class EdgeGLAM(torch.nn.Module):
-    def __init__(self, input_, h, output_):
-        super(EdgeGLAM, self).__init__()
-        self.activation = GELU()
-        self.batch_norm2 = BatchNorm(input_, output_)
-        self.linear1 = Linear(input_, h[0]) 
-        self.linear2 = Linear(h[0], output_)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.batch_norm2(x)
-        h = self.linear1(x)
-        h = self.activation(h)
-        h = self.linear2(h)
-        # h = torch.sigmoid(h)
-        return torch.squeeze(h, 1)
-
-class CustomLoss(torch.nn.Module):
-    def __init__(self):
-        super(CustomLoss, self).__init__()
-                    #BCELoss
-        self.bce = BCEWithLogitsLoss(pos_weight=torch.tensor([EDGE_IMBALANCE]).to(device))
-        self.ce = CrossEntropyLoss(weight=torch.tensor(PUBLAYNET_IMBALANCE).to(device))
-
-    def forward(self, n_pred, n_true, e_pred, e_true):
-        loss = self.ce(n_pred, n_true) + EDGE_COEF*self.bce(e_pred, e_true)
-        return loss
 
 class GLAMDataset(Dataset):
     def __init__(self, json_dir):
@@ -87,6 +30,24 @@ class GLAMDataset(Dataset):
             data = json.load(f)
         return data
 
+    def __str__(self):
+        return f"""DATASET INFO:
+count row: {len(self)}
+first: {self[0].keys()}
+\t A:{np.shape(self[0]["A"])}
+\t nodes_feature:{np.shape(self[0]["nodes_feature"])}
+\t edges_feature:{np.shape(self[0]["edges_feature"])}
+\t true_edges:{np.shape(self[0]["true_edges"])}
+\t true_nodes:{np.shape(self[0]["true_nodes"])}
+end:{self[-1].keys()}
+\t A{np.shape(self[-1]["A"])}
+\t nodes_feature:{np.shape(self[-1]["nodes_feature"])}
+\t edges_feature:{np.shape(self[-1]["edges_feature"])}
+\t true_edges:"{np.shape(self[-1]["true_edges"])}
+\t true_nodes:{np.shape(self[-1]["true_nodes"])}
+
+"""
+
 def delete_error_nodes(graph):
     error_nodes = [i for i, n in enumerate(graph["true_nodes"]) if n == -1]
     true_nodes = [i for i, n in enumerate(graph["true_nodes"]) if n != -1]
@@ -94,10 +55,10 @@ def delete_error_nodes(graph):
         del graph["nodes_feature"][index]
         del graph["true_nodes"][index]
 
-    error_edges = [i for i, e in enumerate(zip(graph["A"][0], graph["A"][1])) 
-                   if e[0] in error_nodes or 
+    error_edges = [i for i, e in enumerate(zip(graph["A"][0], graph["A"][1]))
+                   if e[0] in error_nodes or
                       e[1] in error_nodes]
-  
+
     for index in sorted(error_edges, reverse=True):
         del graph["A"][0][index]
         del graph["A"][1][index]
@@ -106,164 +67,196 @@ def delete_error_nodes(graph):
     new = dict()
     for i, n in enumerate(true_nodes):
         new[n] = i
-    
+
     for i in range(len(graph["A"][0])):
         graph["A"][0][i] = new[graph["A"][0][i]]
         graph["A"][1][i] = new[graph["A"][1][i]]
-        
+
 
 def get_tensor_from_graph(graph):
     def class_node(n):
         rez = [0, 0, 0, 0, 0]
-        if n!= -1:
+        if n != -1:
             rez[n] = 1
         return rez
+
     delete_error_nodes(graph)
-    i = graph["A"]
-    v_in = [1 for e in graph["edges_feature"]]
-    y = graph["edges_feature"]
-
+    edge_index = torch.tensor(graph["A"], dtype=torch.long).to(device)
+    edge_raw = graph["edges_feature"]
+    v_in = [1 for _ in edge_raw]
+    src_list = edge_index[0].tolist()
+    dst_list = edge_index[1].tolist()
     v_true = graph["true_edges"]
-    n_true = [class_node(n) for n in graph["true_nodes"]]
-    x = graph["nodes_feature"]
-    N = len(x)
-    
-    X = torch.tensor(data=x, dtype=torch.float32).to(device)
-    Y = torch.tensor(data=y, dtype=torch.float32).to(device)
-    sp_A = torch.sparse_coo_tensor(indices=i, values=v_in, size=(N, N), dtype=torch.float32).to(device)
-    E_true = torch.tensor(data=v_true, dtype=torch.float32).to(device)
-    N_true = torch.tensor(data=n_true, dtype=torch.float32).to(device)
-    if X.shape[1] != PARAMS["node_featch"]:
-        X = []
-    if Y.shape[1] != PARAMS["edge_featch"]:
-        X = []
-    return X, Y, sp_A, E_true, N_true, i
+    node_true = [class_node(n) for n in graph["true_nodes"]]
 
-def validation(models, dataset, criterion):
+    nodes_feature = graph["nodes_feature"]
+    N = len(nodes_feature)
+
+    true_edge_cat = []
+    for u, v, bin_label in zip(src_list, dst_list, v_true):
+        if bin_label == 1 and node_true[u] == node_true[v]:
+            true_edge_cat.append(node_true[u])
+        else:
+            true_edge_cat.append([0., 0., 0., 0., 0.])
+
+    node_x = torch.tensor(data=nodes_feature, dtype=torch.float32).to(device)
+    edge_raw_tensor = torch.tensor(data=edge_raw, dtype=torch.float32).to(device)
+    sp_A = torch.sparse_coo_tensor(indices=edge_index, values=v_in, size=(N, N), dtype=torch.float32).to(device)
+    true_edge_cat_tensor = torch.tensor(data=true_edge_cat, dtype=torch.float32).to(device)
+    true_edge_bin_tensor = torch.tensor(data=v_true, dtype=torch.float32).to(device)
+
+    # # Проверка размерностей: если фичей узлов или ребер не соответствует ожидаемым, вернуть None
+    # if node_x.shape[1] != PARAMS["node_featch"]:
+    #     return None
+    # if edge_raw_tensor.shape[1] != PARAMS["edge_featch"]:
+    #     return None
+
+    return node_x, edge_raw_tensor, sp_A, true_edge_cat_tensor, true_edge_bin_tensor, edge_index
+
+
+def step(model: torch.nn.Module, batch, optimizer, criterion, train=True):
+    if train:
+        optimizer.zero_grad()
     my_loss_list = []
-    for batch in dataset:
-        my_loss_list_batch = []
-        for j, graph in enumerate(batch):
-            if not 'true_nodes' in graph.keys():
+    for j, graph in enumerate(batch):
+        try:
+            tensors = get_tensor_from_graph(graph)
+            if tensors is None:
                 continue
-            X, Y, sp_A, E_true, N_true, i = get_tensor_from_graph(graph)
-            if len(X) in (0, 1):                       
-                continue
-            Node_emb, Node_class = models[0](X, sp_A)
-            Omega = torch.cat([Node_emb[i[0]],Node_emb[i[1]], X[i[0]], X[i[1]], Y],dim=1).to(device)
-            E_pred = models[1](Omega)
-            loss = criterion(Node_class, N_true, E_pred, E_true)
-            my_loss_list_batch.append(loss.item())
-        my_loss_list.append(np.mean(my_loss_list_batch))
-        print(f"{(j+1)/len(dataset)*100:.2f} % loss = {my_loss_list[-1]:.5f} {' '*30}", end='\r')
+            node_x, edge_raw, sp_A, true_edge_cat, true_edge_bin, edge_index = tensors
+            outputs = model(node_x, edge_raw, edge_index)
+            edge_multi_class = outputs["edge_multi_class"]
+            edge_bin_class = outputs["edge_bin_class"]
+            loss = criterion(edge_multi_class, true_edge_cat, edge_bin_class, true_edge_bin)
+            my_loss_list.append(loss.item())
+            print(f"Batch loss={my_loss_list[-1]:.4f}" + " "*40, end="\r")
+            if train:
+                loss.backward()
+        except Exception as e:
+            print(e)
+            if "edges_feature" in graph.keys():
+                print(np.array(graph['edges_feature']).shape)
+            if "nodes_feature" in graph.keys():
+                print(np.array(graph['nodes_feature']).shape)
+
+
+    if train:
+        optimizer.step()
     return np.mean(my_loss_list)
 
+
+def validation(model, dataset, criterion):
+    my_loss_list = []
+    for batch in dataset:
+        rez = step(model, batch, optimizer=None, criterion=criterion, train=False)
+        my_loss_list.append(rez)
+
+    return np.mean(my_loss_list)
 
 def split_index_train_val(dataset, val_split=0.2, shuffle=True, seed=1234,batch_size=64):
     N = len(dataset)
     count_batchs = int(N*(1-val_split))//batch_size
-    train_size = count_batchs * batch_size 
+    train_size = count_batchs * batch_size
     indexs = [i for i in range(N)]
-    np.random.shuffle(indexs)
+    if shuffle:
+        np.random.shuffle(indexs)
     train_indexs = indexs[:train_size]
     val_indexs = indexs[train_size:]
     batchs_train_indexs = [[train_indexs[k*batch_size+i] for i in range(batch_size)] for k in range(count_batchs)]
-    return batchs_train_indexs, val_indexs    
+    return batchs_train_indexs, val_indexs
 
-def train_step(models, batch, optimizer, criterion):
-    optimizer.zero_grad()
-    my_loss_list = []
-   
-    for j, graph in enumerate(batch):
-        if not 'true_nodes' in graph.keys():
-                continue
-        X, Y, sp_A, E_true, N_true, i = get_tensor_from_graph(graph)
-        if len(X) in (0, 1):                       
-            continue
-        Node_emb, Node_class = models[0](X, sp_A)
-        Omega = torch.cat([Node_emb[i[0]],Node_emb[i[1]], X[i[0]], X[i[1]], Y],dim=1).to(device)
-        E_pred = models[1](Omega)
-        loss = criterion(Node_class, N_true, E_pred, E_true)
-        my_loss_list.append(loss.item())
-        print(f"Batch loss={my_loss_list[-1]:.4f}" + " "*40, end="\r")
-        loss.backward()
-    optimizer.step()
-    return np.mean(my_loss_list)
 
-def train_model(params, models, dataset, save_frequency=5):  
-    optimizer = torch.optim.Adam(
-    list(models[0].parameters()) + list(models[1].parameters()),
-    lr=params["learning_rate"],
-    )
-    criterion = CustomLoss()
-    models[0].to(device)
-    models[1].to(device)
+def train_model(params, model, dataset, save_frequency=5, start_epoch=0):
+    optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
+
+    criterion = CustomLoss(params["loss_params"])
+
+    model.to(device)
+    criterion.to(device)
+
     loss_list = []
-    with open(LOG_FILE, 'a') as f:
-        for key, val in params.items():
-            f.write(f"{key}:\t{val}\n")
-    
+
     train_dataset, val_dataset = split_index_train_val(dataset, val_split=0.1, batch_size=params["batch_size"])
-    for k in range(params["epochs"]):
-        my_loss_list = []
+
+    for k in range(start_epoch, params["epochs"]):
+        batch_loss_list = []
         if k == 0:
             start = time.time()
-        for l, batch_indexs in enumerate(train_dataset):
-            batch = [dataset[ind] for ind in batch_indexs]
-            batch_loss = train_step(models, batch, optimizer, criterion)
-            my_loss_list.append(batch_loss)
-            print(f"Batch # {l+1} loss={my_loss_list[-1]:.4f}" + " "*40)
-            if (k == 0 and l==0):
-                print(f"Время обучения batch'а {time.time()-start:.2f} сек")
-        train_val = np.mean(my_loss_list)
-        loss_list.append(train_val)
-        batchs = [[dataset[ind] for ind in val_dataset]]
-        validation_val = validation(models, batchs, criterion)
-        print("="*10, f"EPOCH #{k+1}","="*10, f"({train_val:.4f}/{validation_val:.4f})")
-        if k == 0:
-            print(f"Время обучения epoch {time.time()-start:.2f} сек")    
-            
-        with open(LOG_FILE, 'a') as f:
-            f.write(f"EPOCH #{k}\t {train_val:.8f} (VAL: {validation_val:.8f})\n")  
-        if (k+1) % save_frequency == 0:
-            num = k//save_frequency
-            torch.save(models[0].state_dict(), GLAM_NODE_MODEL+f"_tmp_{num}")
-            torch.save(models[1].state_dict(), GLAM_EDGE_MODEL+f"_tmp_{num}")
-    with open(LOG_FILE, 'a') as f:
-        f.write(f"Время обучения: {time.time()-start:.2f} сек")
-    torch.save(models[0].state_dict(), GLAM_NODE_MODEL)
-    torch.save(models[1].state_dict(), GLAM_EDGE_MODEL)
+        for l, batch_indices in enumerate(train_dataset):
+            batch = [dataset[ind] for ind in batch_indices]
+            batch_loss = step(model, batch, optimizer, criterion)
+            batch_loss_list.append(batch_loss)
+            print(f"Batch # {l + 1} loss={batch_loss_list[-1]:.4f}" + " " * 40)
+            if (k == start_epoch and l == 0):
+                print(f"Время обучения batch'а {time.time() - start:.2f} сек")
 
+        train_loss = np.mean(batch_loss_list)
+        loss_list.append(train_loss)
+
+        val_batch = [[dataset[ind] for ind in val_dataset]]
+        val_loss = validation(model, val_batch, criterion)
+        print("=" * 10, f"EPOCH #{k + 1}", "=" * 10, f"({train_loss:.4f}/{val_loss:.4f})")
+        if k == start_epoch:
+            print(f"Время обучения epoch {time.time() - start:.2f} сек")
+
+        log(f"EPOCH #{k}\t {train_loss:.8f} (VAL: {val_loss:.8f})\n")
+        if (k + 1) % save_frequency == 0:
+            num = k // save_frequency
+            torch.save(model.state_dict(), f"{GLAM_MODEL}_tmp_{num}")
+    log(f"Время обучения: {time.time()-start:.2f} сек")
+    torch.save(model.state_dict(), GLAM_MODEL)
+
+def load_checkpoint(model, path_model,restart_num=None):
+    dir_model = os.path.dirname(path_model)
+    name_model = os.path.basename(path_model)
+    names = [n for n in os.listdir(dir_model) if name_model+'_tmp_' in n]
+    if restart_num is None:
+        list_num = [int(n.split("_tmp_")[-1]) for n in names]
+        if len(list_num) == 0:
+            return
+        restart_num = max(list_num)
+
+    checkpoint_path = os.path.join(dir_model, name_model+f"_tmp_{restart_num}")
+    model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
+    print(checkpoint_path)
+    return restart_num
+
+def log(str_):
+    with open(LOG_FILE, 'a') as f:
+        f.write(str_)
 
 
 if __name__ == "__main__":
+    is_restart = False
+    restart_num = None
     dataset = GLAMDataset(PATH_GRAPHS_JSONS)
-     
+    import datetime
+
+    if is_restart:
+        log("R E S T A R T ")
+    log(datetime.datetime.now().__str__() + '\n')
     try:
-        str_ = f"""DATASET INFO:
-count row: {len(dataset)}
-first: {dataset[0].keys()}
-\t A:{np.shape(dataset[0]["A"])}
-\t nodes_feature:{np.shape(dataset[0]["nodes_feature"])}
-\t edges_feature:{np.shape(dataset[0]["edges_feature"])}
-\t true_edges:{np.shape(dataset[0]["true_edges"])}
-\t true_nodes:{np.shape(dataset[0]["true_nodes"])}
-end:{dataset[-1].keys()}
-\t A{np.shape(dataset[-1]["A"])}
-\t nodes_feature:{np.shape(dataset[-1]["nodes_feature"])}
-\t edges_feature:{np.shape(dataset[-1]["edges_feature"])}
-\t true_edges:"{np.shape(dataset[-1]["true_edges"])}
-\t true_nodes:{np.shape(dataset[-1]["true_nodes"])}
-
-"""
+        str_ = dataset.__str__()
+        str_ += '\n'.join(f"{key}:\t{val}" for key, val in PARAMS.items())
         print(str_)
-        with open(LOG_FILE, 'a') as f:    
-            f.write(str_)
+        if not is_restart:
+            log(str_)
     except:
-        print(dataset)
+        pass
+        # print(path)
 
-    COUNT_CLASS_NODE = 5
-    node_glam = NodeGLAM(PARAMS["node_featch"], PARAMS["H1"], COUNT_CLASS_NODE)
-    SIZE_VEC_FOR_EDGE = 2*PARAMS["node_featch"]+2*PARAMS["H1"][-1] + PARAMS["edge_featch"]
-    edge_glam = EdgeGLAM(SIZE_VEC_FOR_EDGE, PARAMS["H2"], 1)
-    train_model(PARAMS, [node_glam, edge_glam], dataset, save_frequency=SAVE_FREQUENCY)
+    NUM_EDGE_CLASSES = 5
+    model: torch.nn.Module = TorchModel(node_input_dim=PARAMS["node_featch"],
+    node_hidden_dims=PARAMS["H1"],
+    node_emb_dim=PARAMS["H1"][-1],
+    edge_raw_dim=PARAMS["edge_featch"],
+    edge_hidden_dims=PARAMS["H2"],
+    edge_emb_dim=PARAMS["H2"][-1],
+    cat_hidden_dims=[64, 32],  # пример для многоклассового классификатора
+    num_edge_classes=NUM_EDGE_CLASSES,
+    bin_hidden_dims=[64, 32])
+    if is_restart:
+        restart_num = load_checkpoint(model, GLAM_MODEL)
+
+    start_epoch = 0 if restart_num is None else (restart_num + 1) * SAVE_FREQUENCY
+    train_model(PARAMS, model, dataset, save_frequency=SAVE_FREQUENCY, start_epoch=start_epoch)

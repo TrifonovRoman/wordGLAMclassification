@@ -38,27 +38,28 @@ def extract(path_dataset, path_img_publaynet=None, path_pdf_publaynet=None):
     N = len(files)
     for i, file in enumerate(files):
         print(file, end=' ')
+
         try:
             path_json = os.path.join(path_dataset, file)
             json_with_featchs.read_from_file(path_json)
             path_pdf = os.path.join(path_pdf_publaynet, json_with_featchs.json['file_name'][:-4]+'.pdf')
-            
-            json_with_featchs.add_featchs(lambda: featch_words_and_styles(path_pdf), names=['styles', 'words'], 
-                                is_reupdate=False, rewrite=True)
-            
-            json_with_featchs.add_featchs(lambda: featch_A(json_with_featchs.json['styles'], json_with_featchs.json['words']), names=['A'], 
-                                is_reupdate=False, rewrite=True)
-            
-            json_with_featchs.add_featchs(lambda: nodes_feature(json_with_featchs.json['styles'], json_with_featchs.json['words']), names=['nodes_feature'], 
-                                is_reupdate=False, rewrite=True) #???????????????
-            
+
+            json_with_featchs.add_featchs(lambda: featch_words_and_styles(path_pdf), names=['styles', 'words'],
+                                is_reupdate=True, rewrite=True)
+
+            json_with_featchs.add_featchs(lambda: featch_A(json_with_featchs.json['styles'], json_with_featchs.json['words']), names=['A'],
+                                is_reupdate=True, rewrite=True)
+
+            json_with_featchs.add_featchs(lambda: nodes_feature(json_with_featchs.json['styles'], json_with_featchs.json['words']), names=['nodes_feature'],
+                                is_reupdate=True, rewrite=True) #???????????????
+
             json_with_featchs.add_featchs(lambda: nodes_feature_new_styles(json_with_featchs.json['styles'], json_with_featchs.json['words'], json_with_featchs.json['nodes_feature']), names=['nodes_feature'],
-                                is_reupdate=True, rewrite=True)  #!!!!!!!!!!!!!!!
-            json_with_featchs.add_featchs(lambda: edges_feature(json_with_featchs.json['A'], json_with_featchs.json['words']), names=['edges_feature'], 
-                                is_reupdate=False, rewrite=True)
-            
-            json_with_featchs.add_featchs(lambda: true_class_from_publaynet(json_with_featchs.json['blocks'], json_with_featchs.json['words'], json_with_featchs.json['A']), names=["true_edges", "true_nodes"], 
-                                is_reupdate=False, rewrite=True)
+                                is_reupdate=False, rewrite=True)  #!!!!!!!!!!!!!!!
+            json_with_featchs.add_featchs(lambda: edges_feature(json_with_featchs.json['A'], json_with_featchs.json['words']), names=['edges_feature'],
+                                is_reupdate=True, rewrite=True)
+
+            json_with_featchs.add_featchs(lambda: true_class_from_publaynet(json_with_featchs.json['blocks'], json_with_featchs.json['words'], json_with_featchs.json['A']), names=["true_edges", "true_nodes"],
+                                is_reupdate=True, rewrite=True)
             
         except:
             print("error in ", file)

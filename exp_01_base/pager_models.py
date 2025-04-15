@@ -14,7 +14,10 @@ from pager.page_model.sub_models.dtype import ImageSegment, Word
 from pager.page_model.sub_models.converters import PDF2Img, PDF2OnlyFigBlocks
 import numpy as np
 import os
+from typing import List
+import torch
 import re
+from .torch_model import TorchModel
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
@@ -23,7 +26,7 @@ PATH_STYLE_MODEL = os.environ["PATH_STYLE_MODEL"]
 WITH_TEXT = True
 TYPE_GRAPH = "4N"
 EXPERIMENT_PARAMS = {
-    "node_featch": 47,
+    "node_featch": 37,
     "edge_featch": 2,
     "epochs": 20,
     "batch_size": 50,
@@ -190,44 +193,44 @@ def edges_feature(A, words):
         edges_featch.append([w1.get_angle_center(w2), w1.get_min_dist(w2)])
     # print(edges_featch)
     return [edges_featch]
-      
+
 
 
 conf_words_and_styles = {"path_model": PATH_STYLE_MODEL,"lang": "eng+rus", "psm": 4, "oem": 3,"onetone_delete": True, "k": 4 }
-unit_words_and_styles = PageModelUnit(id="words_and_styles", 
-                            sub_model=WordsAndStylesModel(), 
-                            converters={"image": Image2WordsAndStyles(conf_words_and_styles)}, 
+unit_words_and_styles = PageModelUnit(id="words_and_styles",
+                            sub_model=WordsAndStylesModel(),
+                            converters={"image": Image2WordsAndStyles(conf_words_and_styles)},
                             extractors=[])
 
 
-unit_pdf = PageModelUnit(id="pdf", 
-                               sub_model=PDFModel(), 
-                               converters={}, 
+unit_pdf = PageModelUnit(id="pdf",
+                               sub_model=PDFModel(),
+                               converters={},
                                extractors=[])
 
-# unit_image = PageModelUnit(id="image", 
-#                                sub_model=ImageModel(), 
-#                                converters={PDF2Img()}, 
+# unit_image = PageModelUnit(id="image",
+#                                sub_model=ImageModel(),
+#                                converters={PDF2Img()},
 #                                extractors=[])
-    
 
-unit_words_and_styles_pdf = PageModelUnit(id="words_and_styles", 
-                            sub_model=WordsAndStylesModel(), 
-                            converters={"pdf": PDF2WordsAndStyles(conf_words_and_styles)}, 
-                            extractors=[])                                       
 
-unit_words_and_styles_start = PageModelUnit(id="words_and_styles", 
-                            sub_model=WordsAndStylesModel(), 
-                            converters={}, 
+unit_words_and_styles_pdf = PageModelUnit(id="words_and_styles",
+                            sub_model=WordsAndStylesModel(),
+                            converters={"pdf": PDF2WordsAndStyles(conf_words_and_styles)},
+                            extractors=[])
+
+unit_words_and_styles_start = PageModelUnit(id="words_and_styles",
+                            sub_model=WordsAndStylesModel(),
+                            converters={},
                             extractors=[])
 conf_graph = {"with_text": True} if WITH_TEXT else None
-ws2g_converter=WordsAndStylesToSpDelaunayGraph(conf_graph) if TYPE_GRAPH == "Delaunay" else WordsAndStylesToSpGraph4N(conf_graph)
-unit_graph = PageModelUnit(id="graph", 
-                            sub_model=SpGraph4NModel(), 
-                            extractors=[],  
+ws2g_converter=WordsAndStylesToSpDelaunayGraph(conf_graph, add_text=False) if TYPE_GRAPH == "Delaunay" else WordsAndStylesToSpGraph4N(conf_graph, add_text=False) # TEXT не надо два раза обрабатывать
+unit_graph = PageModelUnit(id="graph",
+                            sub_model=SpGraph4NModel(),
+                            extractors=[],
                             converters={"words_and_styles":  ws2g_converter})
 img2words_and_styles = PageModel(page_units=[
-    unit_pdf, 
+    unit_pdf,
     # unit_image,
     unit_words_and_styles_pdf
 ]) # На самом деле pdf2words_and_styles
@@ -243,23 +246,32 @@ json_with_featchs = JsonWithFeatchs()
 
 class JsonWithFeatchsExtractor(BaseExtractor):
     def extract(self, json_with_featchs: JsonWithFeatchs):
-        json_with_featchs.add_featchs(lambda: featch_words_and_styles(json_with_featchs.name_file), names=['styles', 'words'], 
+        json_with_featchs.add_featchs(lambda: featch_words_and_styles(json_with_featchs.name_file), names=['styles', 'words'],
                             is_reupdate=False, rewrite=False)
-        
-        json_with_featchs.add_featchs(lambda: featch_A(json_with_featchs.json['styles'], json_with_featchs.json['words']), names=['A'], 
+        json_with_featchs.add_featchs(lambda: featch_A(json_with_featchs.json['styles'], json_with_featchs.json['words']), names=['A'],
                             is_reupdate=False, rewrite=False)
-        
-        json_with_featchs.add_featchs(lambda: nodes_feature(json_with_featchs.json['styles'], json_with_featchs.json['words']), names=['nodes_feature'], 
-                            is_reupdate=False, rewrite=False) 
-        
-        json_with_featchs.add_featchs(lambda: edges_feature(json_with_featchs.json['A'], json_with_featchs.json['words']), names=['edges_feature'], 
-                            is_reupdate=False, rewrite=False) 
+        json_with_featchs.add_featchs(lambda: nodes_feature(json_with_featchs.json['styles'], json_with_featchs.json['words']), names=['nodes_feature'],
+                            is_reupdate=False, rewrite=False)
+        json_with_featchs.add_featchs(lambda: edges_feature(json_with_featchs.json['A'], json_with_featchs.json['words']), names=['edges_feature'],
+                            is_reupdate=False, rewrite=False)
 
 class JsonWithFeatchsWithRead(JsonWithFeatchs):
     def read_from_file(self, path_file):
         self.name_file = path_file
         return super().from_dict({})
-    
+
+
+def get_tensor_from_graph(graph):
+    i = graph["A"]
+    v_in = [1 for e in graph["edges_feature"]]
+    y = graph["edges_feature"]
+    x = graph["nodes_feature"]
+    N = len(x)
+
+    X = torch.tensor(data=x, dtype=torch.float32)
+    Y = torch.tensor(data=y, dtype=torch.float32)
+    sp_A = torch.sparse_coo_tensor(indices=i, values=v_in, size=(N, N), dtype=torch.float32)
+    return X, Y, sp_A, i
 class Json2Blocks(WordsAndStylesToGLAMBlocks):
     def convert(self, input_model: JsonWithFeatchs, output_model: PhisicalModel):
         graph = {

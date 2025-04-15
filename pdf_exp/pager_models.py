@@ -7,7 +7,7 @@ get_img2phis
 
 from pager import PageModel, PageModelUnit
 from pager.page_model.sub_models import ImageModel, PDFModel, WordsAndStylesModel, SpGraph4NModel, JsonWithFeatchs, BaseExtractor
-from pager.page_model.sub_models import ImageToWordsAndCNNStyles, PDFToWordsAndCNNStyles,  WordsAndStylesToSpGraph4N
+from pager.page_model.sub_models.converters import Image2WordsAndStyles, PDF2WordsAndStyles
 from pager.page_model.sub_models import PhisicalModel, WordsAndStylesToGLAMBlocks
 from pager import PageModel, PageModelUnit, WordsAndStylesModel, SpGraph4NModel, WordsAndStylesToSpGraph4N, WordsAndStylesToSpDelaunayGraph
 from pager.page_model.sub_models.dtype import ImageSegment, StyleWord
@@ -80,7 +80,7 @@ unit_image = PageModelUnit(id="image",
 conf_words_and_styles = {"path_model": PATH_STYLE_MODEL,"lang": "eng+rus", "psm": 4, "oem": 3,"onetone_delete": True, "k": 4 }
 unit_words_and_styles = PageModelUnit(id="words_and_styles", 
                             sub_model=WordsAndStylesModel(), 
-                            converters={"image": ImageToWordsAndCNNStyles(conf_words_and_styles)}, 
+                            converters={"image": Image2WordsAndStyles(conf_words_and_styles)},
                             extractors=[])
 
 
@@ -91,7 +91,7 @@ unit_pdf = PageModelUnit(id="pdf",
 
 unit_words_and_styles_pdf = PageModelUnit(id="words_and_styles", 
                             sub_model=WordsAndStylesModel(), 
-                            converters={"pdf": PDFToWordsAndCNNStyles()}, 
+                            converters={"pdf": PDF2WordsAndStyles()},
                             extractors=[])
 
 unit_words_and_styles_start = PageModelUnit(id="words_and_styles", 
